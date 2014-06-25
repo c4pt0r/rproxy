@@ -3,17 +3,19 @@ package main
 import (
 	"bufio"
 	"flag"
+	log "github.com/ngaut/logging"
 	"io"
-	"log"
 	"net"
 )
 
 var addr string
 var redisAddr string
+var redisPool *RedisConnPool
 
 func init() {
-	flag.StringVar(&addr, "addr", "0.0.0.0:9037", "proxy listen address and port, default is 0.0.0.0:9037")
-	flag.StringVar(&redisAddr, "redis", "127.0.0.1:6379", "redis addr")
+	flag.StringVar(&addr, "addr", "0.0.0.0:9037", "proxy address and port, default: 0.0.0.0:9037")
+	flag.StringVar(&redisAddr, "redis", "127.0.0.1:6379", "redis address")
+	redisPool = NewRedisConnPool(redisAddr, 20)
 }
 
 func redisTunnel(r *bufio.Reader, w *bufio.Writer) {
@@ -22,14 +24,13 @@ func redisTunnel(r *bufio.Reader, w *bufio.Writer) {
 		if err != io.EOF {
 			b, err := resp.Bytes()
 			if err != nil {
-				log.Println(err)
+				log.Warning(err)
 				return
 			}
 			w.Write(b)
 			w.Flush()
 		} else if err != nil {
-			// conn close
-			log.Println(err)
+			log.Warning(err)
 			return
 		}
 	}
@@ -38,19 +39,32 @@ func redisTunnel(r *bufio.Reader, w *bufio.Writer) {
 func handleConn(c net.Conn) {
 	defer c.Close()
 	// create redis conn
-	redisConn, err := net.Dial("tcp", redisAddr)
-	if err != nil {
-		redisConn.Write([]byte("redis error"))
-		return
-	}
-
 	cr, cw := bufio.NewReader(c), bufio.NewWriter(c)
-	rr, rw := bufio.NewReader(redisConn), bufio.NewWriter(redisConn)
 
-	// read client request
-	go redisTunnel(cr, rw)
 	// write result
-	redisTunnel(rr, cw)
+	// read client request
+	for {
+		resp, err := Parse(cr)
+		redisConn := redisPool.GetConn()
+		defer redisPool.ReturnConn(redisConn)
+		rr, rw := bufio.NewReader(redisConn), bufio.NewWriter(redisConn)
+		go redisTunnel(rr, cw)
+		// TODO run redis hook
+		if err != io.EOF {
+			// get resp in bytes
+			b, err := resp.Bytes()
+			if err != nil {
+				log.Warning(err)
+				return
+			}
+			// write to real redis
+			rw.Write(b)
+			rw.Flush()
+		} else if err != nil {
+			log.Warning(err)
+			return
+		}
+	}
 }
 
 func runServer(addr string) {
@@ -61,6 +75,7 @@ func runServer(addr string) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			log.Warning(err)
 			continue
 		}
 		go handleConn(conn)
