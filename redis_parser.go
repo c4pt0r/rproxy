@@ -106,6 +106,20 @@ func Parse(r *bufio.Reader) (*RESP, error) {
 	return nil, ErrInvalid
 }
 
+func (r *RESP) Op() ([]byte, error) {
+	if r.t != Array || len(r.array) < 1 {
+		return nil, ErrInvalid
+	}
+	return r.array[0].b, nil
+}
+
+func (r *RESP) Key() ([]byte, error) {
+	if r.t != Array || len(r.array) < 2 {
+		return nil, ErrInvalid
+	}
+	return r.array[1].b, nil
+}
+
 func (r *RESP) Bytes() ([]byte, error) {
 	var buf []byte
 	switch r.t {
